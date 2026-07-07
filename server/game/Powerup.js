@@ -78,17 +78,34 @@ class Powerup {
                 
             case 'TELEPORT':
                 if (params.tokenIndex !== undefined && params.targetPosition !== undefined) {
-                    if (player.tokens[params.tokenIndex]) {
-                        player.tokens[params.tokenIndex].position = params.targetPosition;
+                    const token = player.tokens[params.tokenIndex];
+                    if (token) {
+                        token.position = params.targetPosition;
+                        token.homeColumn = false;
+                        token.finished = false;
                         result.applied = true;
                         result.effect = { type: 'teleport', tokenIndex: params.tokenIndex, targetPosition: params.targetPosition };
                         result.message = 'Token teleported!';
+                        
+                        // Check for capture at target position
+                        const captured = game.checkCapture(player, params.tokenIndex);
+                        if (captured) {
+                            player.captureCount = (player.captureCount || 0) + captured.length;
+                            while (player.captureCount >= 2) {
+                                player.captureCount -= 2;
+                                if (typeof game.grantPowerup === 'function') {
+                                    game.grantPowerup(player);
+                                }
+                            }
+                            result.effect.captured = captured;
+                            result.message += ` Captured opponent token!`;
+                        }
                     }
                 }
                 break;
                 
             case 'STEAL':
-                const targetOpponent = game.players.find(p => p.id === params.targetPlayerId);
+                const targetOpponent = game.players.find(p => p.id === params.targetPlayerId && p.id !== playerId);
                 if (targetOpponent && targetOpponent.powerups && targetOpponent.powerups.length > 0) {
                     const stolen = Powerup.stealRandomPowerup(targetOpponent, player);
                     if (stolen) {
@@ -102,9 +119,14 @@ class Powerup {
                 break;
                 
             case 'SKIP_TURN':
-                result.applied = true;
-                result.effect = { type: 'skip_turn', targetPlayerId: params.targetPlayerId };
-                result.message = 'Opponent turn skipped!';
+                const skipPlayer = game.players.find(p => p.id === parseInt(params.targetPlayerId) && p.id !== playerId);
+                if (skipPlayer) {
+                    result.applied = true;
+                    result.effect = { type: 'skip_turn', targetPlayerId: skipPlayer.id };
+                    result.message = `${skipPlayer.name}'s turn will be skipped!`;
+                } else {
+                    result.message = 'Invalid target opponent selected for skip turn!';
+                }
                 break;
             case 'DICE_BOOST':
                 if (game.diceValue === 0) {
@@ -123,6 +145,8 @@ class Powerup {
                     const token = player.tokens[params.tokenIndex];
                     if (token.finished) {
                         result.message = 'Cannot shield a finished token!';
+                    } else if (token.shielded) {
+                        result.message = 'Token is already shielded!';
                     } else {
                         token.shielded = true;
                         result.applied = true;
@@ -137,17 +161,20 @@ class Powerup {
             case 'BOMB':
                 if (params.targetPosition !== undefined && params.targetPosition >= 0 && params.targetPosition < 52) {
                     let hitCount = 0;
-                    let shieldedCount = 0;
+                    let shieldCount = 0;
                     game.players.forEach(p => {
-                        p.tokens.forEach(t => {
+                        p.tokens.forEach((t, tIdx) => {
                             if (!t.homeColumn && !t.finished && t.position === params.targetPosition) {
                                 // Shielded tokens absorb the bomb (shield consumed, token stays).
                                 if (t.shielded) {
                                     t.shielded = false;
-                                    shieldedCount++;
+                                    shieldCount++;
+                                    game.shieldAbsorbs = game.shieldAbsorbs || [];
+                                    game.shieldAbsorbs.push({ playerId: p.id, tokenId: tIdx, byPlayerId: playerId });
                                 } else {
                                     t.position = -1;
                                     t.homeColumn = false;
+                                    t.shielded = false;
                                     hitCount++;
                                 }
                             }
@@ -156,7 +183,7 @@ class Powerup {
                     result.applied = true;
                     result.effect = { type: 'bomb', targetPosition: params.targetPosition };
                     result.message = `Bomb exploded at position ${params.targetPosition}! ${hitCount} token(s) sent back to base.` +
-                        (shieldedCount > 0 ? ` ${shieldedCount} shielded token(s) absorbed the blast.` : '');
+                        (shieldCount > 0 ? ` ${shieldCount} shielded token(s) absorbed the blast.` : '');
                 } else {
                     result.message = 'Invalid target for bomb!';
                 }
@@ -181,7 +208,7 @@ class Powerup {
             case 'SWAP_TOKENS':
                 if (params.ownTokenIndex !== undefined && params.opponentPlayerId !== undefined && params.opponentTokenIndex !== undefined) {
                     const ownToken = player.tokens[params.ownTokenIndex];
-                    const oppPlayer = game.players.find(p => p.id === params.opponentPlayerId);
+                    const oppPlayer = game.players.find(p => p.id === params.opponentPlayerId && p.id !== playerId);
                     const oppToken = oppPlayer ? oppPlayer.tokens[params.opponentTokenIndex] : null;
                     
                     if (ownToken && oppToken) {
@@ -235,18 +262,21 @@ class Powerup {
 
             case 'GLOBAL_BOMB':
                 let globalHitCount = 0;
-                let globalShieldedCount = 0;
+                let globalShieldCount = 0;
                 game.players.forEach(p => {
                     if (p.id !== playerId) {
-                        p.tokens.forEach(t => {
+                        p.tokens.forEach((t, tIdx) => {
                             if (t.position >= 0 && t.position < 52 && !t.homeColumn && !t.finished) {
                                 // Shielded tokens absorb the blast; shield consumed, token stays.
                                 if (t.shielded) {
                                     t.shielded = false;
-                                    globalShieldedCount++;
+                                    globalShieldCount++;
+                                    game.shieldAbsorbs = game.shieldAbsorbs || [];
+                                    game.shieldAbsorbs.push({ playerId: p.id, tokenId: tIdx, byPlayerId: playerId });
                                 } else {
                                     t.position = -1;
                                     t.homeColumn = false;
+                                    t.shielded = false;
                                     globalHitCount++;
                                 }
                             }
@@ -256,7 +286,7 @@ class Powerup {
                 result.applied = true;
                 result.effect = { type: 'global_bomb' };
                 result.message = `Global Bomb exploded! Sent ${globalHitCount} opponent token(s) back to base!` +
-                    (globalShieldedCount > 0 ? ` ${globalShieldedCount} shielded token(s) absorbed the blast.` : '');
+                    (globalShieldCount > 0 ? ` ${globalShieldCount} shielded token(s) absorbed the blast.` : '');
                 break;
 
             case 'GLOBAL_STEAL':

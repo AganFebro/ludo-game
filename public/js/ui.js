@@ -264,6 +264,12 @@ class LudoUI {
                 this.engagePowerupTargeting(data.powerupId, data.powerupType, playerObj);
             }
         };
+        this.socketClient.onPowerupResult = (data) => {
+            if (!data.success) {
+                this.addSystemChatMessage(`❌ ${data.error}`);
+                alert(data.error);
+            }
+        };
     }
     
     showScreen(screenName) {
